@@ -1,0 +1,53 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: lunchbot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: lunch_bot_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    # Порт наружу НЕ пробрасываем: бот ходит по внутренней сети Docker.
+    # Для локальной разработки раскомментируйте.
+    # ports:
+    #   - "5432:5432"
+    volumes:
+      - lunchbot_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d lunch_bot_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  lunchbot:
+    build: .
+    container_name: lunchbot
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/lunch_bot_db
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      LUNCH_ADMIN_CHAT_ID: ${LUNCH_ADMIN_CHAT_ID}
+      LUNCH_RECEIPT_BACK_DAYS: ${LUNCH_RECEIPT_BACK_DAYS:-1}
+      JAVA_TOOL_OPTIONS: "-Xmx256m -XX:MaxMetaspaceSize=128m"
+    # Бот работает через getUpdates, входящих запросов нет — порт не нужен.
+    # ports:
+    #   - "8080:8080"
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  lunchbot_pgdata:
