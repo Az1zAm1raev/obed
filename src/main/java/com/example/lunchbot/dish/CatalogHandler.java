@@ -1,6 +1,7 @@
 package com.example.lunchbot.dish;
 
 import com.example.lunchbot.all.TelegramClient;
+import com.example.lunchbot.receipt.SettingsRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -28,10 +29,14 @@ public class CatalogHandler {
     private static final String SET_PHOTO      = "SET_PHOTO";
     private static final String ADD_ALIAS      = "ADD_ALIAS";
     private static final String MERGE_TARGET   = "MERGE_TARGET";
+    private static final String REC_NAME  = "REC_NAME";
+    private static final String REC_PHONE = "REC_PHONE";
+    private static final String REC_ID    = "REC_ID";
 
     private final TelegramClient telegram;
     private final DishRepository repository;
     private final DishMatcher matcher;
+    private final SettingsRepository settings;
 
     // ============================================================ /catalog
 
@@ -180,6 +185,13 @@ public class CatalogHandler {
      * Команды никогда не поглощаются: диалог живёт в группе, и «/close» посреди
      * добавления блюда должен закрыть опрос, а не стать названием блюда.
      */
+    /** Запуск пошагового ввода реквизита: имя → телефон → id. */
+    public void startRecipientDialog(long userId, long chatId) {
+        repository.setState(userId, chatId, REC_NAME, null);
+        telegram.sendMessage(chatId,
+                "Смена реквизита. Введите имя получателя (например: Азиз Амираев).\n/cancel — отмена");
+    }
+
     public boolean handleText(long userId, long chatId, String text) {
         Optional<DishRepository.State> found = repository.findState(userId);
         if (found.isEmpty()) {
@@ -228,6 +240,48 @@ public class CatalogHandler {
                 repository.clearState(userId);
                 telegram.sendMessage(chatId, "🔀 Объединено с «" + target.get().name() + "».");
                 showCatalog(chatId);
+            }
+            case REC_NAME -> {
+                if (text.length() < 2) {
+                    telegram.sendMessage(chatId, "Имя слишком короткое. Введите имя и фамилию.");
+                    return true;
+                }
+                settings.set("recipient.name", text.strip(), userId);
+                repository.setState(userId, chatId, REC_PHONE, null);
+                telegram.sendMessage(chatId, "Имя принято. Теперь введите номер телефона (996XXXXXXXXX).");
+            }
+            case REC_PHONE -> {
+                String phone = text.replaceAll("[^0-9+]", "");
+                if (phone.replaceAll("\\D", "").length() < 9) {
+                    telegram.sendMessage(chatId, "Не похоже на номер. Введите ещё раз, например 996708760011.");
+                    return true;
+                }
+                String prevPhone = settings.recipientPhone();
+                settings.set("recipient.phone", phone.replaceAll("\\D", ""), userId);
+                if (prevPhone != null && !prevPhone.equals(phone.replaceAll("\\D", ""))) {
+                    settings.appendLegacyPhone(prevPhone, userId);
+                }
+                repository.setState(userId, chatId, REC_ID, null);
+                telegram.sendMessage(chatId,
+                        "Номер принят. Теперь введите Telegram id получателя "
+                                + "(тот, у кого одно блюдо бесплатно).\n"
+                                + "Если id не нужен — напишите «-».");
+            }
+            case REC_ID -> {
+                String v = text.strip();
+                if (!v.equals("-")) {
+                    if (!v.matches("\\d{6,}")) {
+                        telegram.sendMessage(chatId, "id — это число. Введите ещё раз или «-».");
+                        return true;
+                    }
+                    settings.set("recipient.id", v, userId);
+                }
+                repository.clearState(userId);
+                Long rid = settings.recipientId();
+                telegram.sendMessage(chatId,
+                        "✅ Реквизит обновлён:\n"
+                                + settings.recipientName() + " · " + settings.recipientPhone()
+                                + (rid != null ? " · id " + rid : ""));
             }
             case ADD_DISH_PHOTO, SET_PHOTO ->
                     telegram.sendMessage(chatId, "Жду фото, а не текст. /cancel — отмена");

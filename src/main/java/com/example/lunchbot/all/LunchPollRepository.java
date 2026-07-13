@@ -40,6 +40,14 @@ public class LunchPollRepository {
         return Boolean.TRUE.equals(active);
     }
 
+    /** Последний опрос в чате — активный или уже закрытый. Для /money после /close. */
+    public Long findLastPollId(long chatId) {
+        java.util.List<Long> r = jdbc.queryForList(
+                "SELECT id FROM lunch_poll WHERE chat_id = ? ORDER BY created_at DESC LIMIT 1",
+                Long.class, chatId);
+        return r.isEmpty() ? null : r.get(0);
+    }
+
     public Long findActivePollId(long chatId) {
         List<Long> result = jdbc.queryForList(
                 "SELECT id FROM lunch_poll WHERE chat_id = ? AND active = TRUE ORDER BY created_at DESC LIMIT 1",
@@ -66,7 +74,7 @@ public class LunchPollRepository {
 
     public List<Map<String, Object>> findVotes(long pollId) {
         return jdbc.queryForList("""
-                SELECT v.option_id, v.full_name, v.username
+                SELECT v.option_id, v.full_name, v.username, v.user_id, v.free
                 FROM lunch_poll_vote v
                 WHERE v.poll_id = ?
                 ORDER BY v.voted_at
@@ -74,11 +82,26 @@ public class LunchPollRepository {
     }
 
     public void insertVote(long pollId, long userId, String username, String fullName, long optionId) {
+        insertVote(pollId, userId, username, fullName, optionId, false);
+    }
+
+    /** free = true — блюдо взято бесплатно (привилегия получателя), в /money не считается. */
+    public void insertVote(long pollId, long userId, String username, String fullName,
+                           long optionId, boolean free) {
         jdbc.update("""
-                INSERT INTO lunch_poll_vote(poll_id, user_id, username, full_name, option_id)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO lunch_poll_vote(poll_id, user_id, username, full_name, option_id, free)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT (poll_id, user_id, option_id) DO NOTHING
-                """, pollId, userId, username, fullName, optionId);
+                """, pollId, userId, username, fullName, optionId, free);
+    }
+
+    /** Сколько ПЛАТНЫХ блюд человек уже выбрал (бесплатное не считается). */
+    public int countPaidVotes(long pollId, long userId) {
+        Integer n = jdbc.queryForObject("""
+                SELECT count(*) FROM lunch_poll_vote
+                WHERE poll_id = ? AND user_id = ? AND NOT free
+                """, Integer.class, pollId, userId);
+        return n == null ? 0 : n;
     }
 
     public List<Long> findUserVoteOptionIds(long pollId, long userId) {

@@ -8,8 +8,8 @@ import org.springframework.stereotype.Repository;
 import java.util.List;
 
 /**
- * Баланс чеков. Один одобренный чек = право на один голос.
- * Голос "тратит" чек (spent = TRUE). Отмена голоса возвращает чек в оборот.
+ * Денежный баланс. Каждый одобренный чек добавляет свою сумму.
+ * Блюдо списывает цену человека. Баланс = сумма чеков − число блюд × цена.
  */
 @Repository
 @RequiredArgsConstructor
@@ -19,52 +19,42 @@ public class PaymentRepository {
 
     // ------------------------------------------------ сохранение чека
 
-    /**
-     * @return id сохранённого чека, либо null если tx_id уже использован (дубль).
-     */
-    public Long saveReceipt(long pollId, long userId, String status, String fileId, String txId) {
+    /** @return id чека, либо null если tx_id уже использован (дубль). */
+    public Long saveReceipt(long pollId, long userId, String status, String fileId, String txId, int amount) {
         try {
             return jdbc.queryForObject("""
-                    INSERT INTO lunch_receipt(poll_id, user_id, status, file_id, tx_id)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO lunch_receipt(poll_id, user_id, status, file_id, tx_id, amount)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     RETURNING id
-                    """, Long.class, pollId, userId, status, fileId, txId);
+                    """, Long.class, pollId, userId, status, fileId, txId, amount);
         } catch (DuplicateKeyException e) {
-            return null;   // ux_receipt_tx: этот чек уже засчитан
+            return null;   // ux_receipt_tx: чек уже засчитан
         }
     }
 
-    // ------------------------------------------------ баланс
+    // ------------------------------------------------ баланс в деньгах
 
-    /** Есть ли неистраченный одобренный чек — то есть право проголосовать. */
-    public boolean hasUnspentReceipt(long pollId, long userId) {
-        Integer n = jdbc.queryForObject("""
-                SELECT count(*) FROM lunch_receipt
-                WHERE poll_id = ? AND user_id = ? AND status = 'APPROVED' AND NOT spent
-                """, Integer.class, pollId, userId);
-        return n != null && n > 0;
-    }
-
-    /** Потратить один чек на голос. @return true, если чек нашёлся и списан. */
-    public boolean spendOneReceipt(long pollId, long userId) {
-        int updated = jdbc.update("""
-                UPDATE lunch_receipt SET spent = TRUE
-                WHERE id = (
-                    SELECT id FROM lunch_receipt
-                    WHERE poll_id = ? AND user_id = ? AND status = 'APPROVED' AND NOT spent
-                    ORDER BY created_at
-                    LIMIT 1
-                )
-                """, pollId, userId);
-        return updated > 0;
-    }
-
-    /** Вернуть все чеки человека в оборот — при отмене голосов. */
-    public void refundAll(long pollId, long userId) {
-        jdbc.update("""
-                UPDATE lunch_receipt SET spent = FALSE
+    /** Сумма всех одобренных чеков человека за опрос. */
+    public int paidTotal(long pollId, long userId) {
+        Integer sum = jdbc.queryForObject("""
+                SELECT COALESCE(sum(amount), 0) FROM lunch_receipt
                 WHERE poll_id = ? AND user_id = ? AND status = 'APPROVED'
-                """, pollId, userId);
+                """, Integer.class, pollId, userId);
+        return sum == null ? 0 : sum;
+    }
+
+    /** Все, кто оплатил в этом опросе: user_id -> сумма одобренных чеков. */
+    public java.util.Map<Long, Integer> paidByUser(long pollId) {
+        java.util.Map<Long, Integer> out = new java.util.HashMap<>();
+        jdbc.query("""
+                SELECT user_id, COALESCE(sum(amount),0) AS total
+                FROM lunch_receipt
+                WHERE poll_id = ? AND status = 'APPROVED'
+                GROUP BY user_id
+                """, rs -> {
+            out.put(rs.getLong("user_id"), rs.getInt("total"));
+        }, pollId);
+        return out;
     }
 
     // ------------------------------------------------ ручная проверка
@@ -94,5 +84,10 @@ public class PaymentRepository {
 
     public void clearPending(long userId) {
         jdbc.update("DELETE FROM lunch_pending_receipt WHERE user_id = ?", userId);
+    }
+
+    /** Очистить ожидания по конкретному опросу — при его закрытии. */
+    public void clearPendingByPoll(long pollId) {
+        jdbc.update("DELETE FROM lunch_pending_receipt WHERE poll_id = ?", pollId);
     }
 }

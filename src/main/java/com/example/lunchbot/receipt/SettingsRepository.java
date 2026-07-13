@@ -41,6 +41,33 @@ public class SettingsRepository {
         return get("recipient.name");
     }
 
+    /** Основная группа (задаётся /setmain). Из лички команды считают по ней. */
+    public Long mainChatId() {
+        String v = get("main.chat.id");
+        if (v == null || v.isBlank()) return null;
+        try { return Long.parseLong(v.trim()); } catch (NumberFormatException e) { return null; }
+    }
+
+    public void setMainChatId(long chatId, long adminId) {
+        set("main.chat.id", String.valueOf(chatId), adminId);
+    }
+
+    /** id получателя — он же имеет право на одно бесплатное блюдо. Может быть не задан. */
+    public Long recipientId() {
+        String v = get("recipient.id");
+        if (v == null || v.isBlank()) return null;
+        try { return Long.parseLong(v.trim()); } catch (NumberFormatException e) { return null; }
+    }
+
+    // QR оплаты — Telegram file_id картинки.
+    public String qrFileId() {
+        return get("payment.qr");
+    }
+
+    public void setQr(String fileId, long adminId) {
+        set("payment.qr", fileId, adminId);
+    }
+
     /** Номера, на которые платить больше нельзя. Чек на них отклоняется. */
     public List<String> legacyPhones() {
         String raw = get("recipient.phone.legacy");
@@ -57,7 +84,10 @@ public class SettingsRepository {
      * Меняет реквизит. Прежний номер переезжает в legacy — не для того,
      * чтобы его засчитывать, а чтобы объяснить человеку, куда ушли деньги.
      */
-    public void changeRecipient(String phone, String name, long adminId) {
+    public void changeRecipient(String phone, String name, Long recipientId, long adminId) {
+        if (recipientId != null) {
+            set("recipient.id", String.valueOf(recipientId), adminId);
+        }
         String previous = recipientPhone();
 
         if (previous != null && !previous.equals(phone)) {
@@ -69,6 +99,13 @@ public class SettingsRepository {
         }
         set("recipient.phone", phone, adminId);
         set("recipient.name", name, adminId);
+    }
+
+    /** Добавить номер в список старых (на которые платить больше нельзя). */
+    public void appendLegacyPhone(String phone, long adminId) {
+        java.util.List<String> legacy = new java.util.ArrayList<>(legacyPhones());
+        if (!legacy.contains(phone)) legacy.add(phone);
+        set("recipient.phone.legacy", String.join(",", legacy), adminId);
     }
 
     /** Последние 9 цифр: гасит +996 / 996 / 0 в начале. */

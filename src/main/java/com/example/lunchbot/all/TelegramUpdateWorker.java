@@ -102,6 +102,12 @@ public class TelegramUpdateWorker {
         if (file != null) {
             String caption = message.has("caption") ? message.get("caption").asText() : null;
             boolean dishCaption = caption != null && caption.strip().toLowerCase().startsWith("/dish ");
+            boolean qrCaption = caption != null && caption.strip().toLowerCase().startsWith("/setqr");
+
+            if (qrCaption && isAdmin(message)) {
+                payments.setQr(chatId, userId, file.fileId());
+                return;
+            }
 
             // В личке в каталог попадает только фото с явной подписью /dish.
             // Всё остальное в личке — чек.
@@ -132,7 +138,9 @@ public class TelegramUpdateWorker {
         }
 
         if (text.startsWith("/lunch") || text.equals("/close") || text.equals("/summary")
-                || text.equals("/catalog") || text.startsWith("/recipient")) {
+                || text.equals("/catalog") || text.startsWith("/recipient")
+                || text.equals("/money") || text.startsWith("/setqr")
+                || text.equals("/setmain")) {
             if (!isAdmin(message)) {
                 telegram.sendMessage(chatId, "⛔ У вас нет прав для этой команды.");
                 return;
@@ -149,7 +157,28 @@ public class TelegramUpdateWorker {
             return;
         }
         if (text.startsWith("/recipient")) {
-            payments.changeRecipient(chatId, userId, text);
+            String rest = text.substring("/recipient".length()).strip();
+            if (rest.isEmpty()) {
+                catalog.startRecipientDialog(userId, chatId);   // пошаговый ввод
+            } else {
+                payments.changeRecipient(chatId, userId, text); // одной строкой, если указали
+            }
+            return;
+        }
+        if (text.equals("/money")) {
+            long src = isPrivate ? payments.mainChatIdOr(chatId) : chatId;
+            Long pollId = lunchPollService.findLastPollId(src);
+            if (pollId == null) telegram.sendMessage(chatId, "Нет голосования. В основной группе задайте /setmain.");
+            else lunchPollService.sendMoney(chatId, pollId);
+            return;
+        }
+        if (text.equals("/qr")) {
+            payments.showQr(chatId);
+            return;
+        }
+        if (text.equals("/setmain")) {
+            boolean isGroup = !"private".equals(chatType);
+            payments.setMainGroup(chatId, userId, isGroup);
             return;
         }
         if (text.equals("/menu")) {
@@ -198,9 +227,14 @@ public class TelegramUpdateWorker {
         // --- голосование ---
         if (data.startsWith("lunch_vote:")) {
             String[] p = data.split(":");
+            long pollId = Long.parseLong(p[1]);
             VoteResult r = lunchPollService.vote(
-                    Long.parseLong(p[1]), Long.parseLong(p[2]), userId, username, displayName(user));
-            telegram.answerCallback(callbackId, messageFor(r), r == VoteResult.PAYMENT_REQUIRED);
+                    pollId, Long.parseLong(p[2]), userId, username, displayName(user));
+            if (r == VoteResult.PAYMENT_REQUIRED) {
+                telegram.answerCallback(callbackId, lunchPollService.shortfallMessage(pollId, userId), true);
+            } else {
+                telegram.answerCallback(callbackId, messageFor(r));
+            }
             return;
         }
         if (data.startsWith("lunch_cancel:")) {

@@ -8,6 +8,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import jakarta.annotation.PostConstruct;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -25,9 +26,54 @@ public class LunchPollService {
     private final TelegramClient telegram;
     private final PaymentService payments;
     private final CatalogHandler catalog;
+    private final com.example.lunchbot.receipt.PriceBook priceBook;
+
+    /**
+     * Ссылка на сообщение опроса. Для супергрупп: https://t.me/c/<internal>/<msgId>,
+     * где internal = chat_id без префикса -100. Для обычных групп ссылки нет — вернём null,
+     * тогда PaymentService просто не покажет кнопку.
+     */
+    @PostConstruct
+    void wirePollLink() {
+        payments.setPollGate(repository::isPollActive);
+        payments.setPollLinkResolver(pollId -> {
+            try {
+                Map<String, Object> poll = repository.findPoll(pollId);
+                long chatId = ((Number) poll.get("chat_id")).longValue();
+                Object msgObj = poll.get("message_id");
+                if (msgObj == null) return null;
+                long msgId = ((Number) msgObj).longValue();
+                String s = String.valueOf(chatId);
+                if (s.startsWith("-100")) {
+                    return "https://t.me/c/" + s.substring(4) + "/" + msgId;
+                }
+                return null;   // обычная группа — прямых ссылок нет
+            } catch (Exception e) {
+                return null;
+            }
+        });
+    }
 
     public Long findActivePollId(long chatId) {
         return repository.findActivePollId(chatId);
+    }
+
+    public Long findLastPollId(long chatId) {
+        return repository.findLastPollId(chatId);
+    }
+
+    /** Текст для всплывашки, когда денег на балансе не хватает на блюдо. */
+    public String shortfallMessage(long pollId, long userId) {
+        int paidDishes = repository.countPaidVotes(pollId, userId);
+        int price = payments.priceFor(userId);
+        int balance = payments.balance(pollId, userId, paidDishes);
+        int need = price - balance;
+        if (balance <= 0) {
+            return "🧾 Нужен чек. Блюдо стоит " + price + " сом.\n"
+                    + "Нажмите «Подтвердить оплату» и пришлите PDF-чек в личку.";
+        }
+        return "🧾 На балансе " + balance + " сом, блюдо стоит " + price + ".\n"
+                + "Не хватает " + need + ". Пришлите ещё чек — остаток учтётся.";
     }
 
     // ============================================================ создание
@@ -75,7 +121,6 @@ public class LunchPollService {
             return VoteResult.ALREADY_VOTED;
         }
 
-        // Первый выбор ИЛИ добавление ещё блюда — в обоих случаях нужен неистраченный чек.
         boolean firstChoice = currentVotes.isEmpty();
         boolean addMode = repository.isAddModeOn(pollId, userId);
 
@@ -83,17 +128,20 @@ public class LunchPollService {
             return VoteResult.ALREADY_VOTED;   // уже выбрал, режим добавления не включён
         }
 
-        // Гейт: есть ли оплаченный, ещё не потраченный чек.
-        if (!payments.hasUnspentReceipt(pollId, userId)) {
-            return VoteResult.PAYMENT_REQUIRED;
+        // Первое блюдо привилегированного пользователя — бесплатно, без чека.
+        if (firstChoice && payments.hasFreeDish(userId)) {
+            repository.insertVote(pollId, userId, username, fullName, optionId, true);
+            refreshMessage(pollId);
+            return VoteResult.SAVED;
         }
 
-        // Тратим ровно один чек на этот голос.
-        if (!payments.spendOneReceipt(pollId, userId)) {
-            return VoteResult.PAYMENT_REQUIRED;
+        // Денежный баланс: хватает ли на ещё одно платное блюдо.
+        int paidDishes = repository.countPaidVotes(pollId, userId);
+        if (!payments.canAfford(pollId, userId, paidDishes)) {
+            return VoteResult.PAYMENT_REQUIRED;   // сообщение с суммой соберём в worker
         }
 
-        repository.insertVote(pollId, userId, username, fullName, optionId);
+        repository.insertVote(pollId, userId, username, fullName, optionId, false);
         if (addMode) {
             repository.disableAddMode(pollId, userId);
         }
@@ -111,7 +159,7 @@ public class LunchPollService {
         }
         repository.deleteAllUserVotes(pollId, userId);
         repository.disableAddMode(pollId, userId);
-        payments.refundAll(pollId, userId);   // чеки уплачены — возвращаем право выбора
+        // Баланс восстановится сам: он считается как оплачено − число блюд.
         refreshMessage(pollId);
         return VoteResult.CANCELLED;
     }
@@ -125,8 +173,8 @@ public class LunchPollService {
             return VoteResult.ALREADY_VOTED;
         }
         repository.enableAddMode(pollId, userId);
-        // Права ещё нет — сразу честно предупреждаем, что нужен новый чек.
-        if (!payments.hasUnspentReceipt(pollId, userId)) {
+        int paidDishes = repository.countPaidVotes(pollId, userId);
+        if (!payments.canAfford(pollId, userId, paidDishes)) {
             return VoteResult.PAYMENT_REQUIRED;
         }
         return VoteResult.ADD_MODE_ENABLED;
@@ -137,6 +185,7 @@ public class LunchPollService {
     @Transactional
     public void closePoll(long chatId, long pollId) {
         repository.closePoll(pollId);
+        payments.clearPendingByPoll(pollId);
         Map<String, Object> poll = repository.findPoll(pollId);
         int messageId = ((Number) poll.get("message_id")).intValue();
 
@@ -165,9 +214,79 @@ public class LunchPollService {
             }
         }
         sb.append("Итого ").append(total).append('\n');
-        sb.append("Азиз\n").append("Ибраимова 24/4");
+        sb.append("Батырхан\n").append("Ибраимова 24/4");
 
         telegram.sendMessage(chatId, sb.toString());
+    }
+
+    /**
+     * Денежный расчёт — ТОЛЬКО в личку админу, чтобы остальные не видели.
+     * Бесплатные блюда (привилегия) исключены из обеих строк: столовая за них
+     * не берёт, человек не платит.
+     */
+    public void sendMoney(long adminChatId, long pollId) {
+        List<Map<String, Object>> votes = repository.findVotes(pollId);
+
+        // по каждому пользователю: сколько платных блюд и его цена
+        Map<Long, Integer> paidDishesByUser = new java.util.HashMap<>();
+        Map<Long, String> nameByUser = new java.util.HashMap<>();
+        int freeCount = 0;
+
+        for (Map<String, Object> v : votes) {
+            long userId = ((Number) v.get("user_id")).longValue();
+            nameByUser.putIfAbsent(userId, String.valueOf(v.getOrDefault("full_name", "?")));
+            if (Boolean.TRUE.equals(v.get("free"))) {
+                freeCount++;
+            } else {
+                paidDishesByUser.merge(userId, 1, Integer::sum);
+            }
+        }
+
+        int paidCount = paidDishesByUser.values().stream().mapToInt(Integer::intValue).sum();
+        int canteen = paidCount * priceBook.canteenPrice();
+
+        // реально собрано = суммы чеков
+        Map<Long, Integer> paidMoney = payments.paidByUser(pollId);
+        int collected = paidMoney.values().stream().mapToInt(Integer::intValue).sum();
+
+        // переплаты и неиспользованные платежи
+        StringBuilder over = new StringBuilder();   // взяли меньше, чем оплатили
+        StringBuilder unused = new StringBuilder(); // оплатили, но не выбрали
+        for (Map.Entry<Long, Integer> e : paidMoney.entrySet()) {
+            long uid = e.getKey();
+            int paid = e.getValue();
+            int dishes = paidDishesByUser.getOrDefault(uid, 0);
+            int price = priceBook.priceFor(uid);
+            int spent = dishes * price;
+            int left = paid - spent;
+            String who = nameByUser.getOrDefault(uid, String.valueOf(uid));
+            if (dishes == 0 && paid > 0) {
+                unused.append("  ").append(who).append(" — ").append(paid).append(" (вернуть полностью)\n");
+            } else if (left > 0) {
+                over.append("  ").append(who).append(" — ").append(left)
+                        .append(" (взял ").append(dishes).append(", оплатил ").append(paid).append(")\n");
+            }
+        }
+
+        int remainder = collected - canteen;
+
+        StringBuilder text = new StringBuilder("💰 Расчёт (только для вас)\n\n");
+        text.append("Порций: ").append(paidCount).append(" оплаченных");
+        if (freeCount > 0) text.append(" + ").append(freeCount).append(" бесплатное");
+        text.append("\n");
+        text.append("Столовой: ").append(paidCount).append(" × ").append(priceBook.canteenPrice())
+                .append(" = ").append(canteen).append("\n");
+        text.append("Собрано: ").append(collected).append("\n");
+        text.append("Остаток вам: ").append(remainder).append("\n");
+
+        if (over.length() > 0) {
+            text.append("\n⚠️ Переплатили:\n").append(over);
+        }
+        if (unused.length() > 0) {
+            text.append("\n💸 Оплатили, но не выбрали блюдо:\n").append(unused);
+        }
+
+        telegram.sendMessage(adminChatId, text.toString());
     }
 
     // ============================================================ рендер

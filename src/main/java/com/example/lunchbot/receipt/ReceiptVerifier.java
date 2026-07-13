@@ -52,6 +52,16 @@ public class ReceiptVerifier {
             "комментарий", "описание", "реквизит", "requisite", "comment", "description"
     );
 
+    /** Сумма у метки: «Итого 250,00», «Total 500,00», «Сумма платежа: 480.00». */
+    private static final Pattern AMOUNT_LABELED = Pattern.compile(
+            "(?:итого|сумма платежа|сумма итого|сумма|total)[^\\d]{0,30}(\\d[\\d\\s]*[.,]\\d{2})",
+            Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+
+    /** Запасной путь: число рядом с валютой, кроме нулевых комиссий. */
+    private static final Pattern AMOUNT_CURRENCY = Pattern.compile(
+            "(\\d[\\d\\s]*[.,]\\d{2})\\s*(?:kgs|сом|с\\b)",
+            Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+
     /** dd.mm.yyyy | dd-mm-yy | dd/mm/yyyy — все банки пишут день первым. */
     private static final Pattern DATE = Pattern.compile("\\b(\\d{2})[.\\-/](\\d{2})[.\\-/](\\d{2,4})\\b");
 
@@ -76,13 +86,15 @@ public class ReceiptVerifier {
             boolean dateOk,
             LocalDate date,
             String txId,
+            int amount,          // сумма чека в сомах, 0 если не распозналась
             String reason
     ) {
         /** Разбор по пунктам — админ должен видеть, что именно бот не смог проверить. */
         public String breakdown() {
             return "Дата: " + (dateOk ? (date + " ✅") : "не та ❌") + "\n"
                     + "Получатель: " + (nameOk ? "распознан ✅" : "не найден ❌") + "\n"
-                    + "Телефон: " + (phoneOk ? "совпал ✅" : "не найден ❌");
+                    + "Телефон: " + (phoneOk ? "совпал ✅" : "не найден ❌") + "\n"
+                    + "Сумма: " + (amount > 0 ? amount + " сом" : "не распознана ❌");
         }
     }
 
@@ -90,7 +102,7 @@ public class ReceiptVerifier {
 
     public Result verify(String rawText) {
         if (rawText == null || rawText.isBlank()) {
-            return new Result(Status.MANUAL, false, false, false, null, null,
+            return new Result(Status.MANUAL, false, false, false, null, null, 0,
                     "Не удалось прочитать текст чека");
         }
 
@@ -109,6 +121,7 @@ public class ReceiptVerifier {
         boolean dateOk = date != null;
 
         String txId = findTxId(rawText);
+        int amount = findAmount(rawText);
 
         // ---- ни телефона, ни имени ----
         if (!phoneOk && !nameOk) {
@@ -121,7 +134,7 @@ public class ReceiptVerifier {
                             + "Актуальный реквизит: " + name + ", " + phone)
                     .orElse("В чеке не найден получатель " + name + " (" + phone + ")");
 
-            return new Result(Status.REJECTED, false, false, dateOk, date, txId, msg);
+            return new Result(Status.REJECTED, false, false, dateOk, date, txId, amount, msg);
         }
 
         // ---- дата ----
@@ -130,16 +143,16 @@ public class ReceiptVerifier {
             String msg = found != null
                     ? "Дата в чеке: " + found + ", а нужен чек за сегодня"
                     : "В чеке не найдена дата операции";
-            return new Result(Status.REJECTED, phoneOk, nameOk, false, found, txId, msg);
+            return new Result(Status.REJECTED, phoneOk, nameOk, false, found, txId, amount, msg);
         }
 
         // ---- телефон найден: самый сильный признак ----
         if (phoneOk) {
-            return new Result(Status.APPROVED, true, nameOk, true, date, txId, "OK");
+            return new Result(Status.APPROVED, true, nameOk, true, date, txId, amount, "OK");
         }
 
         // ---- имя есть, телефона нет: OCR мог смазать цифры ----
-        return new Result(Status.MANUAL, false, true, true, date, txId,
+        return new Result(Status.MANUAL, false, true, true, date, txId, amount,
                 "Имя совпало, но не найден номер " + phone + " — нужна проверка вручную");
     }
 
@@ -283,6 +296,32 @@ public class ReceiptVerifier {
     }
 
     // ---------------------------------------------------------- id чека
+
+    /** Сумма чека в целых сомах. Берём наибольшую у меток (итого > комиссия 0,00). */
+    private int findAmount(String text) {
+        double best = 0;
+        Matcher m = AMOUNT_LABELED.matcher(text);
+        while (m.find()) {
+            double v = parseMoney(m.group(1));
+            if (v > best) best = v;
+        }
+        if (best == 0) {
+            Matcher c = AMOUNT_CURRENCY.matcher(text);
+            while (c.find()) {
+                double v = parseMoney(c.group(1));
+                if (v > best) best = v;
+            }
+        }
+        return (int) Math.round(best);
+    }
+
+    private double parseMoney(String raw) {
+        try {
+            return Double.parseDouble(raw.replaceAll("\\s", "").replace(',', '.'));
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
 
     private String findTxId(String text) {
         for (Pattern p : TX_ID) {
