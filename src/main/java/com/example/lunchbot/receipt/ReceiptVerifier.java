@@ -129,9 +129,7 @@ public class ReceiptVerifier {
             String msg = legacy
                     .map(p -> "Вы оплатили на старый номер " + p + ". Деньги ушли не туда.\n"
                             + "Актуальный реквизит: " + name + ", " + phone)
-                    .orElse("В чеке не найден получатель " + name + " (" + phone + ")"
-                            + "\n\n[отладка] зона имени: «" + normalize(nameZone).strip() + "»"
-                            + "\n[отладка] цифры: " + split.nonSenderDigits());
+                    .orElse("В чеке не найден получатель " + name + " (" + phone + ")");
 
             return new Result(Status.REJECTED, false, false, dateOk, date, txId, amount, msg);
         }
@@ -234,7 +232,8 @@ public class ReceiptVerifier {
         if (parts.isEmpty()) return false;
         if (parts.size() == 1) {
             return Pattern.compile("\\b" + Pattern.quote(parts.get(0)) + "\\b",
-                    Pattern.UNICODE_CASE | Pattern.CASE_INSENSITIVE).matcher(z).find();
+                            Pattern.UNICODE_CASE | Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CHARACTER_CLASS)
+                    .matcher(z).find();
         }
 
         // слово имени рядом с инициалом другого слова — в любом порядке
@@ -255,7 +254,8 @@ public class ReceiptVerifier {
     }
 
     private boolean find(String haystack, String regex) {
-        return Pattern.compile(regex, Pattern.UNICODE_CASE | Pattern.CASE_INSENSITIVE)
+        return Pattern.compile(regex,
+                        Pattern.UNICODE_CASE | Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CHARACTER_CLASS)
                 .matcher(haystack).find();
     }
 
