@@ -115,7 +115,22 @@ public class ReceiptVerifier {
         boolean phoneOk = split.nonSenderDigits().contains(phoneSuffix);
 
         String nameZone = split.recipientValues().isBlank() ? split.nonSender() : split.recipientValues();
-        boolean nameOk = namePattern(name).matcher(normalize(nameZone)).find();
+        String normZone = normalize(nameZone);
+        boolean nameOk = namePattern(name).matcher(normZone).find();
+
+        // Запасной путь: если строгий шаблон «Имя Ф.» не сработал, ищем имя рядом
+        // с инициалом в любом виде. Помогает на ELQR и нестандартных чеках.
+        if (!nameOk) {
+            String[] np = normalize(name).split(" ");
+            if (np.length >= 2) {
+                String first = java.util.regex.Pattern.quote(np[0]);
+                String initial = java.util.regex.Pattern.quote(np[1].substring(0, 1));
+                java.util.regex.Pattern loose = java.util.regex.Pattern.compile(
+                        "\\b" + first + "\\b.{0,4}\\b" + initial + "\\b",
+                        java.util.regex.Pattern.UNICODE_CASE | java.util.regex.Pattern.CASE_INSENSITIVE);
+                nameOk = loose.matcher(normZone).find();
+            }
+        }
 
         LocalDate date = findAcceptableDate(rawText);
         boolean dateOk = date != null;
@@ -151,7 +166,13 @@ public class ReceiptVerifier {
             return new Result(Status.APPROVED, true, nameOk, true, date, txId, amount, "OK");
         }
 
-        // ---- имя есть, телефона нет: OCR мог смазать цифры ----
+        // ---- телефона нет (ELQR/QR-оплата), но имя совпало и дата верна ----
+        // В ELQR-чеках номер получателя не печатается (зашит в QR). Имя + дата достаточно.
+        if (nameOk && dateOk) {
+            return new Result(Status.APPROVED, false, true, true, date, txId, amount, "OK (по имени, ELQR)");
+        }
+
+        // ---- имя есть, телефона нет, дата не в окне и т.п. — на ручную проверку ----
         return new Result(Status.MANUAL, false, true, true, date, txId, amount,
                 "Имя совпало, но не найден номер " + phone + " — нужна проверка вручную");
     }
