@@ -36,9 +36,6 @@ public class ReceiptVerifier {
     @Value("${lunch.receipt.back-days:1}")
     private int backDays;
 
-    /** Скомпилированные шаблоны имён: ключ — само имя, чтобы после /recipient пересобрать. */
-    private final Map<String, Pattern> namePatterns = new HashMap<>();
-
     // ---------------------------------------------------------------- метки
 
     private static final List<String> SENDER_LABELS = List.of(
@@ -115,22 +112,7 @@ public class ReceiptVerifier {
         boolean phoneOk = split.nonSenderDigits().contains(phoneSuffix);
 
         String nameZone = split.recipientValues().isBlank() ? split.nonSender() : split.recipientValues();
-        String normZone = normalize(nameZone);
-        boolean nameOk = namePattern(name).matcher(normZone).find();
-
-        // Запасной путь: если строгий шаблон «Имя Ф.» не сработал, ищем имя рядом
-        // с инициалом в любом виде. Помогает на ELQR и нестандартных чеках.
-        if (!nameOk) {
-            String[] np = normalize(name).split(" ");
-            if (np.length >= 2) {
-                String first = java.util.regex.Pattern.quote(np[0]);
-                String initial = java.util.regex.Pattern.quote(np[1].substring(0, 1));
-                java.util.regex.Pattern loose = java.util.regex.Pattern.compile(
-                        "\\b" + first + "\\b.{0,4}\\b" + initial + "\\b",
-                        java.util.regex.Pattern.UNICODE_CASE | java.util.regex.Pattern.CASE_INSENSITIVE);
-                nameOk = loose.matcher(normZone).find();
-            }
-        }
+        boolean nameOk = nameMatches(name, nameZone);
 
         LocalDate date = findAcceptableDate(rawText);
         boolean dateOk = date != null;
@@ -236,25 +218,43 @@ public class ReceiptVerifier {
     // ------------------------------------------------------------ имя
 
     /**
-     * «Азиз Амираев» ловит: «Азиз А.», «АЗИЗ А.», «AZIZ A.», «Азиз Амираев», «Амираев Азиз».
-     * Транслит гасится в normalize() до сравнения, поэтому латиница шаблон не ломает.
+     * Распознаёт получателя независимо от порядка слов в настройках и в чеке.
+     * Ловит: «Азиз А.», «АЗИЗ А.», «AZIZ A.», «Азиз Амираев», «Амираев Азиз»,
+     * причём имя в настройках может быть в любом порядке («Азиз Амираев» или «Амираев Азиз»).
+     * Транслит гасится в normalize() до сравнения.
      */
-    private synchronized Pattern namePattern(String fullName) {
-        return namePatterns.computeIfAbsent(fullName, fn -> {
-            String[] parts = normalize(fn).split(" ");
-            if (parts.length < 2) {
-                return Pattern.compile("\\b" + Pattern.quote(parts[0]) + "\\b",
-                        Pattern.UNICODE_CASE | Pattern.CASE_INSENSITIVE);
-            }
-            String first = Pattern.quote(parts[0]);
-            String last = Pattern.quote(parts[1]);
-            String initial = Pattern.quote(parts[1].substring(0, 1));
+    private boolean nameMatches(String fullName, String zone) {
+        String z = normalize(zone);
+        List<String> parts = new ArrayList<>();
+        for (String w : normalize(fullName).split(" ")) {
+            if (w.length() >= 2) parts.add(w);
+        }
+        if (parts.isEmpty()) return false;
+        if (parts.size() == 1) {
+            return Pattern.compile("\\b" + Pattern.quote(parts.get(0)) + "\\b",
+                    Pattern.UNICODE_CASE | Pattern.CASE_INSENSITIVE).matcher(z).find();
+        }
 
-            return Pattern.compile(
-                    "\\b" + first + "\\s+(" + initial + "|" + last + ")\\b"
-                            + "|\\b" + last + "\\s+" + first + "\\b",
-                    Pattern.UNICODE_CASE | Pattern.CASE_INSENSITIVE);
-        });
+        // слово имени рядом с инициалом другого слова — в любом порядке
+        for (int i = 0; i < parts.size(); i++) {
+            for (int j = 0; j < parts.size(); j++) {
+                if (i == j) continue;
+                String w = Pattern.quote(parts.get(i));
+                String ini = Pattern.quote(parts.get(j).substring(0, 1));
+                if (find(z, "\\b" + w + "\\b.{0,4}\\b" + ini + "\\b")) return true;
+                if (find(z, "\\b" + ini + "\\b.{0,4}\\b" + w + "\\b")) return true;
+            }
+        }
+        // оба полных слова рядом, в любом порядке
+        String a = Pattern.quote(parts.get(0));
+        String b = Pattern.quote(parts.get(1));
+        return find(z, "\\b" + a + "\\b.{0,6}\\b" + b + "\\b")
+                || find(z, "\\b" + b + "\\b.{0,6}\\b" + a + "\\b");
+    }
+
+    private boolean find(String haystack, String regex) {
+        return Pattern.compile(regex, Pattern.UNICODE_CASE | Pattern.CASE_INSENSITIVE)
+                .matcher(haystack).find();
     }
 
     // ------------------------------------------------------ нормализация
