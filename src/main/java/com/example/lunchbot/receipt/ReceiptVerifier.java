@@ -129,7 +129,9 @@ public class ReceiptVerifier {
             String msg = legacy
                     .map(p -> "Вы оплатили на старый номер " + p + ". Деньги ушли не туда.\n"
                             + "Актуальный реквизит: " + name + ", " + phone)
-                    .orElse("В чеке не найден получатель " + name + " (" + phone + ")");
+                    .orElse("В чеке не найден получатель " + name + " (" + phone + ")"
+                            + "\n\n[отладка] зона имени: «" + normalize(nameZone).strip() + "»"
+                            + "\n[отладка] цифры: " + split.nonSenderDigits());
 
             return new Result(Status.REJECTED, false, false, dateOk, date, txId, amount, msg);
         }
