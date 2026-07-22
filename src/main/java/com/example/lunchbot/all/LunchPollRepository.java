@@ -91,7 +91,6 @@ public class LunchPollRepository {
         jdbc.update("""
                 INSERT INTO lunch_poll_vote(poll_id, user_id, username, full_name, option_id, free)
                 VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT (poll_id, user_id, option_id) DO NOTHING
                 """, pollId, userId, username, fullName, optionId, free);
     }
 
@@ -102,6 +101,21 @@ public class LunchPollRepository {
                 WHERE poll_id = ? AND user_id = ? AND NOT free
                 """, Integer.class, pollId, userId);
         return n == null ? 0 : n;
+    }
+
+    /** Имена всех, кто когда-либо голосовал: user_id -> имя. Для /money, где нужен не id. */
+    public java.util.Map<Long, String> findNames() {
+        java.util.Map<Long, String> out = new java.util.HashMap<>();
+        jdbc.query("""
+                SELECT DISTINCT ON (user_id) user_id, full_name, username
+                FROM lunch_poll_vote
+                ORDER BY user_id, voted_at DESC
+                """, rs -> {
+            String n = rs.getString("full_name");
+            if (n == null || n.isBlank()) n = rs.getString("username");
+            out.put(rs.getLong("user_id"), n);
+        });
+        return out;
     }
 
     public List<Long> findUserVoteOptionIds(long pollId, long userId) {

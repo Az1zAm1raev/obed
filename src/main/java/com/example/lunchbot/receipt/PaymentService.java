@@ -59,6 +59,11 @@ public class PaymentService {
         return repository.paidByUser(pollId);
     }
 
+    /** Имена плательщиков из чеков — для /money. */
+    public java.util.Map<Long, String> namesByUser(long pollId) {
+        return repository.namesByUser(pollId);
+    }
+
     public void clearPendingByPoll(long pollId) {
         repository.clearPendingByPoll(pollId);
     }
@@ -73,8 +78,8 @@ public class PaymentService {
         }
         repository.setPending(userId, pollId);
 
-        String qr = settings.qrFileId();
-        String hint = qr != null ? "\n\nМожно оплатить по QR выше." : "";
+        // QR картинкой здесь НЕ шлём — засоряет личку. Кому нужен, вызовет /qr.
+        String hint = settings.qrFileId() != null ? "\nНужен QR — отправьте /qr" : "";
 
         String caption = "🧾 Пришлите чек об оплате — файлом PDF.\n\n"
                 + "Получатель: " + settings.recipientName() + "\n"
@@ -83,9 +88,6 @@ public class PaymentService {
                 + "Скриншот не подойдёт — нужен PDF-файл.\n\n"
                 + "За каждое блюдо — отдельный чек.";
 
-        if (qr != null) {
-            telegram.sendPhoto(chatId, qr, "Отсканируйте для оплаты");
-        }
         telegram.sendMessage(chatId, caption);
     }
 
@@ -131,7 +133,7 @@ public class PaymentService {
         }
 
         Long receiptId = repository.saveReceipt(pollId, userId,
-                result.status().name(), fileId, result.txId(), result.amount());
+                result.status().name(), fileId, result.txId(), result.amount(), displayName);
 
         if (receiptId == null) {
             telegram.sendMessage(chatId,

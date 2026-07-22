@@ -29,6 +29,7 @@ public class CatalogHandler {
     private static final String SET_PHOTO      = "SET_PHOTO";
     private static final String ADD_ALIAS      = "ADD_ALIAS";
     private static final String MERGE_TARGET   = "MERGE_TARGET";
+    private static final String LUNCH_MENU = "LUNCH_MENU";
     private static final String REC_NAME  = "REC_NAME";
     private static final String REC_PHONE = "REC_PHONE";
     private static final String REC_ID    = "REC_ID";
@@ -185,6 +186,19 @@ public class CatalogHandler {
      * Команды никогда не поглощаются: диалог живёт в группе, и «/close» посреди
      * добавления блюда должен закрыть опрос, а не стать названием блюда.
      */
+    /** /lunch без меню — ждём список блюд отдельным сообщением. */
+    public void startLunchDialog(long userId, long chatId) {
+        repository.setState(userId, chatId, LUNCH_MENU, null);
+        telegram.sendMessage(chatId,
+                "Пришлите меню — каждое блюдо с новой строки.\n/cancel — отмена");
+    }
+
+    /** Куда отдать собранное меню. Ставится из LunchPollService. */
+    private java.util.function.BiConsumer<Long, String> lunchMenuHandler;
+    public void setLunchMenuHandler(java.util.function.BiConsumer<Long, String> h) {
+        this.lunchMenuHandler = h;
+    }
+
     /** Запуск пошагового ввода реквизита: имя → телефон → id. */
     public void startRecipientDialog(long userId, long chatId) {
         repository.setState(userId, chatId, REC_NAME, null);
@@ -240,6 +254,12 @@ public class CatalogHandler {
                 repository.clearState(userId);
                 telegram.sendMessage(chatId, "🔀 Объединено с «" + target.get().name() + "».");
                 showCatalog(chatId);
+            }
+            case LUNCH_MENU -> {
+                repository.clearState(userId);
+                if (lunchMenuHandler != null) {
+                    lunchMenuHandler.accept(chatId, text);
+                }
             }
             case REC_NAME -> {
                 if (text.length() < 2) {

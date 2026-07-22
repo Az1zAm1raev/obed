@@ -104,6 +104,23 @@ public class TelegramClient {
                 .retrieve().toBodilessEntity();
     }
 
+    /**
+     * Список команд в подсказке при вводе «/».
+     * scope = null — всем; иначе, например, Map.of("type","all_chat_administrators").
+     */
+    public void setMyCommands(List<Map<String, String>> commands, Object scope) {
+        Map<String, Object> body = new java.util.HashMap<>();
+        body.put("commands", commands);
+        if (scope != null) {
+            body.put("scope", scope);
+        }
+        try {
+            api.post().uri("/setMyCommands").body(body).retrieve().body(JsonNode.class);
+        } catch (Exception ignored) {
+            // подсказка команд — не критично, бот работает и без неё
+        }
+    }
+
     public JsonNode getChatMember(long chatId, long userId) {
         return api.post().uri("/getChatMember")
                 .body(Map.of("chat_id", chatId, "user_id", userId))

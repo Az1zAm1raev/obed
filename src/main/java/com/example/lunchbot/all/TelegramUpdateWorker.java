@@ -10,6 +10,8 @@ import org.springframework.stereotype.Component;
 
 import jakarta.annotation.PostConstruct;
 
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 @Slf4j
@@ -35,10 +37,70 @@ public class TelegramUpdateWorker {
      */
     @PostConstruct
     public void start() {
+        registerCommands();
         Thread t = new Thread(this::pollLoop, "telegram-poll");
         t.setDaemon(true);
         t.start();
         log.info("Telegram long polling запущен");
+    }
+
+    /**
+     * Подсказка команд при вводе «/».
+     * Обычные участники видят три команды, админы группы — все.
+     */
+    private void registerCommands() {
+        telegram.setMyCommands(List.of(
+                Map.of("command", "start", "description", "начать"),
+                Map.of("command", "menu", "description", "фото сегодняшних блюд"),
+                Map.of("command", "qr", "description", "QR для оплаты")
+        ), null);
+
+        telegram.setMyCommands(List.of(
+                Map.of("command", "start", "description", "начать"),
+                Map.of("command", "menu", "description", "фото сегодняшних блюд"),
+                Map.of("command", "qr", "description", "QR для оплаты"),
+                Map.of("command", "lunch", "description", "создать опрос по меню"),
+                Map.of("command", "close", "description", "закрыть опрос"),
+                Map.of("command", "summary", "description", "итог для столовой"),
+                Map.of("command", "money", "description", "денежный расчёт (в личку)"),
+                Map.of("command", "catalog", "description", "каталог блюд"),
+                Map.of("command", "recipient", "description", "сменить реквизит получателя"),
+                Map.of("command", "setqr", "description", "сохранить QR (с картинкой)"),
+                Map.of("command", "setmain", "description", "отметить основную группу"),
+                Map.of("command", "cancel", "description", "отменить текущее действие")
+        ), Map.of("type", "all_chat_administrators"));
+
+        log.info("Списки команд обновлены");
+    }
+
+    /**
+     * «/qr@tunduk_obed_bot» -> «/qr», «/dish@bot Лагман» -> «/dish Лагман».
+     * Telegram подставляет имя бота, когда команду выбирают из подсказки
+     * или в группе несколько ботов.
+     */
+    private String stripBotMention(String text) {
+        if (!text.startsWith("/")) {
+            return text;
+        }
+        int at = text.indexOf('@');
+        if (at < 0) {
+            return text;
+        }
+        // конец команды — первый пробельный символ (пробел ИЛИ перевод строки:
+        // «/lunch@bot\nБосо лагман» тоже должен разбираться)
+        int end = -1;
+        for (int i = 0; i < text.length(); i++) {
+            if (Character.isWhitespace(text.charAt(i))) {
+                end = i;
+                break;
+            }
+        }
+        if (end >= 0 && at > end) {
+            return text;            // «@» в аргументе, а не в команде
+        }
+        String command = text.substring(0, at);
+        String rest = end >= 0 ? text.substring(end) : "";
+        return command + rest;
     }
 
     private void pollLoop() {
@@ -126,6 +188,10 @@ public class TelegramUpdateWorker {
         }
         String text = message.get("text").asText().strip();
 
+        // В группе Telegram добавляет к команде имя бота: «/qr@tunduk_obed_bot».
+        // Срезаем его, иначе equals("/qr") не сработает.
+        text = stripBotMention(text);
+
         // ---------- 3: диалог каталога (работает и в группе) ----------
         if (isAdmin(message) && catalog.handleText(userId, chatId, text)) {
             return;
@@ -148,8 +214,13 @@ public class TelegramUpdateWorker {
         }
 
         if (text.startsWith("/lunch")) {
-            LunchPollRequest request = LunchPollRequestParser.parse(text);
-            lunchPollService.createPoll(chatId, request.title(), request.options());
+            String rest = text.substring("/lunch".length()).strip();
+            if (rest.isEmpty()) {
+                catalog.startLunchDialog(userId, chatId);       // спросим меню отдельным сообщением
+            } else {
+                LunchPollRequest request = LunchPollRequestParser.parse(text);
+                lunchPollService.createPoll(chatId, request.title(), request.options());
+            }
             return;
         }
         if (text.equals("/catalog")) {

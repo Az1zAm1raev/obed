@@ -20,13 +20,14 @@ public class PaymentRepository {
     // ------------------------------------------------ сохранение чека
 
     /** @return id чека, либо null если tx_id уже использован (дубль). */
-    public Long saveReceipt(long pollId, long userId, String status, String fileId, String txId, int amount) {
+    public Long saveReceipt(long pollId, long userId, String status, String fileId, String txId,
+                            int amount, String displayName) {
         try {
             return jdbc.queryForObject("""
-                    INSERT INTO lunch_receipt(poll_id, user_id, status, file_id, tx_id, amount)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO lunch_receipt(poll_id, user_id, status, file_id, tx_id, amount, display_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     RETURNING id
-                    """, Long.class, pollId, userId, status, fileId, txId, amount);
+                    """, Long.class, pollId, userId, status, fileId, txId, amount, displayName);
         } catch (DuplicateKeyException e) {
             return null;   // ux_receipt_tx: чек уже засчитан
         }
@@ -44,6 +45,20 @@ public class PaymentRepository {
     }
 
     /** Все, кто оплатил в этом опросе: user_id -> сумма одобренных чеков. */
+    /** Имена плательщиков из чеков: user_id -> имя. Для /money. */
+    public java.util.Map<Long, String> namesByUser(long pollId) {
+        java.util.Map<Long, String> out = new java.util.HashMap<>();
+        jdbc.query("""
+                SELECT DISTINCT ON (user_id) user_id, display_name
+                FROM lunch_receipt
+                WHERE poll_id = ? AND display_name IS NOT NULL
+                ORDER BY user_id, created_at DESC
+                """, rs -> {
+            out.put(rs.getLong("user_id"), rs.getString("display_name"));
+        }, pollId);
+        return out;
+    }
+
     public java.util.Map<Long, Integer> paidByUser(long pollId) {
         java.util.Map<Long, Integer> out = new java.util.HashMap<>();
         jdbc.query("""

@@ -11,6 +11,7 @@ import org.springframework.transaction.annotation.Transactional;
 import jakarta.annotation.PostConstruct;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -36,6 +37,13 @@ public class LunchPollService {
     @PostConstruct
     void wirePollLink() {
         payments.setPollGate(repository::isPollActive);
+
+        // /lunch без меню: бот спросит список блюд, потом создаст опрос отсюда
+        catalog.setLunchMenuHandler((chatId, menuText) -> {
+            LunchPollRequest request = LunchPollRequestParser.parse("/lunch\n" + menuText);
+            createPoll(chatId, request.title(), request.options());
+        });
+
         payments.setPollLinkResolver(pollId -> {
             try {
                 Map<String, Object> poll = repository.findPoll(pollId);
@@ -116,16 +124,13 @@ public class LunchPollService {
 
         List<Long> currentVotes = repository.findUserVoteOptionIds(pollId, userId);
 
-        // Повторный клик по тому же блюду — ничего не делаем, чек не тратим.
-        if (currentVotes.contains(optionId)) {
-            return VoteResult.ALREADY_VOTED;
-        }
-
         boolean firstChoice = currentVotes.isEmpty();
         boolean addMode = repository.isAddModeOn(pollId, userId);
 
+        // Повторный клик — это ещё одна ПОРЦИЯ. Разрешён только в режиме добавления,
+        // иначе случайный двойной тап списал бы деньги дважды.
         if (!firstChoice && !addMode) {
-            return VoteResult.ALREADY_VOTED;   // уже выбрал, режим добавления не включён
+            return VoteResult.ALREADY_VOTED;   // нажмите «Добавить ещё блюдо»
         }
 
         // Первое блюдо привилегированного пользователя — бесплатно, без чека.
@@ -242,6 +247,11 @@ public class LunchPollService {
             }
         }
 
+        // Имена из всех голосов — на случай, если человек оплатил, но не выбрал блюдо
+        // (в текущем опросе его нет, а имя показать надо).
+        Map<Long, String> knownNames = repository.findNames();
+        Map<Long, String> receiptNames = payments.namesByUser(pollId);   // кто платил, но не голосовал
+
         int paidCount = paidDishesByUser.values().stream().mapToInt(Integer::intValue).sum();
         int canteen = paidCount * priceBook.canteenPrice();
 
@@ -259,7 +269,10 @@ public class LunchPollService {
             int price = priceBook.priceFor(uid);
             int spent = dishes * price;
             int left = paid - spent;
-            String who = nameByUser.getOrDefault(uid, String.valueOf(uid));
+            String who = nameByUser.get(uid);
+            if (who == null || who.isBlank() || who.equals("?")) who = receiptNames.get(uid);
+            if (who == null || who.isBlank()) who = knownNames.get(uid);
+            if (who == null || who.isBlank()) who = "id " + uid;
             if (dishes == 0 && paid > 0) {
                 unused.append("  ").append(who).append(" — ").append(paid).append(" (вернуть полностью)\n");
             } else if (left > 0) {
@@ -316,9 +329,18 @@ public class LunchPollService {
             if (optionVotes.isEmpty()) continue;
 
             sb.append("✅ ").append(option.get("text")).append(" (").append(optionVotes.size()).append(")\n");
+
+            // Считаем порции на человека: две одинаковые порции → «Азиз ×2»
+            Map<String, Integer> portions = new LinkedHashMap<>();
             for (Map<String, Object> vote : optionVotes) {
                 Object name = vote.get("full_name");
-                sb.append("   - ").append(name != null ? name : "Без имени").append('\n');
+                String who = name != null ? String.valueOf(name) : "Без имени";
+                portions.merge(who, 1, Integer::sum);
+            }
+            for (Map.Entry<String, Integer> e : portions.entrySet()) {
+                sb.append("   - ").append(e.getKey());
+                if (e.getValue() > 1) sb.append(" ×").append(e.getValue());
+                sb.append('\n');
             }
             sb.append('\n');
         }
