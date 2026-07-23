@@ -98,32 +98,26 @@ public class CatalogHandler {
             telegram.sendMessage(chatId, "Сейчас нет активного голосования.");
             return;
         }
-        List<String> allNames = repository.allPollDishNames(pollId);
-        List<Dish> dishes = repository.dishesWithPhoto(pollId);
-
-        if (allNames.isEmpty()) {
+        List<Map<String, Object>> entries = repository.menuEntries(pollId);
+        if (entries.isEmpty()) {
             telegram.sendMessage(chatId, "В опросе нет блюд.");
             return;
         }
 
-        // Подписи внутри альбома Telegram показывает только при тапе на фото,
-        // поэтому названия отправляем отдельным списком — их видно сразу.
-        StringBuilder list = new StringBuilder("🍽 Сегодня в меню:\n\n");
-        for (int i = 0; i < allNames.size(); i++) {
-            list.append(i + 1).append(". ").append(allNames.get(i)).append('\n');
-        }
-        if (dishes.isEmpty()) {
-            list.append("\nФото пока нет.");
-            telegram.sendMessage(chatId, list.toString());
-            return;
-        }
-        telegram.sendMessage(chatId, list.toString());
+        // Название, сразу под ним фото — и так по каждому блюду.
+        // Альбомом не шлём: там подписи видны только при тапе на фото.
+        for (int i = 0; i < entries.size(); i++) {
+            Map<String, Object> e = entries.get(i);
+            String name = String.valueOf(e.get("name"));
+            Object photo = e.get("photo");
 
-        List<Map<String, Object>> media = new ArrayList<>();
-        for (Dish d : dishes) {
-            media.add(Map.of("type", "photo", "media", d.photoFileId(), "caption", d.name()));
+            String caption = (i + 1) + ". " + name;
+            if (photo != null) {
+                telegram.sendPhoto(chatId, String.valueOf(photo), caption);
+            } else {
+                telegram.sendMessage(chatId, caption + "\n(фото нет)");
+            }
         }
-        telegram.sendMediaGroup(chatId, media);
     }
 
     // ============================================================ callbacks

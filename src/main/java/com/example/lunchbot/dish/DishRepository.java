@@ -7,6 +7,7 @@ import org.springframework.stereotype.Repository;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 @Repository
@@ -70,6 +71,17 @@ public class DishRepository {
                 WHERE poll_id = ?
                 ORDER BY number
                 """, String.class, pollId);
+    }
+
+    /** Блюда опроса по порядку: название из опроса + фото (может быть null). */
+    public List<Map<String, Object>> menuEntries(long pollId) {
+        return jdbc.queryForList("""
+                SELECT o.text AS name, d.photo_file_id AS photo
+                FROM lunch_poll_option o
+                LEFT JOIN dish d ON d.id = o.dish_id
+                WHERE o.poll_id = ?
+                ORDER BY o.number
+                """, pollId);
     }
 
     public List<Dish> dishesWithPhoto(long pollId) {
