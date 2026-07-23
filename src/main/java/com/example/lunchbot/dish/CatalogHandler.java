@@ -98,11 +98,27 @@ public class CatalogHandler {
             telegram.sendMessage(chatId, "Сейчас нет активного голосования.");
             return;
         }
+        List<String> allNames = repository.allPollDishNames(pollId);
         List<Dish> dishes = repository.dishesWithPhoto(pollId);
-        if (dishes.isEmpty()) {
-            telegram.sendMessage(chatId, "У сегодняшних блюд пока нет фото.");
+
+        if (allNames.isEmpty()) {
+            telegram.sendMessage(chatId, "В опросе нет блюд.");
             return;
         }
+
+        // Подписи внутри альбома Telegram показывает только при тапе на фото,
+        // поэтому названия отправляем отдельным списком — их видно сразу.
+        StringBuilder list = new StringBuilder("🍽 Сегодня в меню:\n\n");
+        for (int i = 0; i < allNames.size(); i++) {
+            list.append(i + 1).append(". ").append(allNames.get(i)).append('\n');
+        }
+        if (dishes.isEmpty()) {
+            list.append("\nФото пока нет.");
+            telegram.sendMessage(chatId, list.toString());
+            return;
+        }
+        telegram.sendMessage(chatId, list.toString());
+
         List<Map<String, Object>> media = new ArrayList<>();
         for (Dish d : dishes) {
             media.add(Map.of("type", "photo", "media", d.photoFileId(), "caption", d.name()));

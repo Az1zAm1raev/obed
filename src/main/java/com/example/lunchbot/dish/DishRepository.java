@@ -40,7 +40,7 @@ public class DishRepository {
                 ORDER BY dist
                 LIMIT 1
                 """, DishRepository::map,
-                norm, norm, DishMatcher.MAX_DISTANCE, norm, DishMatcher.MAX_DISTANCE)
+                        norm, norm, DishMatcher.MAX_DISTANCE, norm, DishMatcher.MAX_DISTANCE)
                 .stream().findFirst();
     }
 
@@ -63,6 +63,15 @@ public class DishRepository {
     }
 
     /** Блюда текущего опроса, у которых есть фото. */
+    /** Все названия блюд опроса — включая те, у которых нет фото и нет карточки в каталоге. */
+    public List<String> allPollDishNames(long pollId) {
+        return jdbc.queryForList("""
+                SELECT text FROM lunch_poll_option
+                WHERE poll_id = ?
+                ORDER BY number
+                """, String.class, pollId);
+    }
+
     public List<Dish> dishesWithPhoto(long pollId) {
         return jdbc.query("""
                 SELECT DISTINCT d.id, d.name, d.photo_file_id
