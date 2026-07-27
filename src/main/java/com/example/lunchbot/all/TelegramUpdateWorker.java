@@ -253,7 +253,8 @@ public class TelegramUpdateWorker {
             return;
         }
         if (text.equals("/menu")) {
-            catalog.showMenuPhotos(chatId, lunchPollService.findActivePollId(chatId));
+            long src = isPrivate ? payments.mainChatIdOr(chatId) : chatId;
+            catalog.showMenuPhotos(chatId, lunchPollService.findActivePollId(src));
             return;
         }
         if (text.equals("/close")) {

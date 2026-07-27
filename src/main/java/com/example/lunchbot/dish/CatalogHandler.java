@@ -105,18 +105,16 @@ public class CatalogHandler {
         }
 
         // Название, сразу под ним фото — и так по каждому блюду.
-        // Альбомом не шлём: там подписи видны только при тапе на фото.
-        for (int i = 0; i < entries.size(); i++) {
-            Map<String, Object> e = entries.get(i);
-            String name = String.valueOf(e.get("name"));
+        // Блюда без фото пропускаем.
+        int shown = 0;
+        for (Map<String, Object> e : entries) {
             Object photo = e.get("photo");
-
-            String caption = (i + 1) + ". " + name;
-            if (photo != null) {
-                telegram.sendPhoto(chatId, String.valueOf(photo), caption);
-            } else {
-                telegram.sendMessage(chatId, caption + "\n(фото нет)");
-            }
+            if (photo == null) continue;
+            shown++;
+            telegram.sendPhoto(chatId, String.valueOf(photo), shown + ". " + e.get("name"));
+        }
+        if (shown == 0) {
+            telegram.sendMessage(chatId, "У сегодняшних блюд пока нет фото.");
         }
     }
 
