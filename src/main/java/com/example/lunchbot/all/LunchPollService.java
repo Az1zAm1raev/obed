@@ -207,6 +207,8 @@ public class LunchPollService {
 
     // ============================================================ оценки
 
+    private static final int MAX_SCORE = 10;
+
     /** Deep link «⭐ Оценить блюда»: в личке по сообщению на каждое взятое блюдо. */
     public void showRatingForm(long userId, long chatId, long pollId) {
         List<Map<String, Object>> options = repository.findRateableOptions(pollId, userId);
@@ -214,7 +216,7 @@ public class LunchPollService {
             telegram.sendMessage(chatId, "Вы не выбирали блюд в этом опросе — оценивать нечего.");
             return;
         }
-        telegram.sendMessage(chatId, "⭐ Оцените блюда от 1 до 5. Оценку можно поменять.");
+        telegram.sendMessage(chatId, "⭐ Оцените блюда от 1 до " + MAX_SCORE + ". Оценку можно поменять.");
         for (Map<String, Object> o : options) {
             long optionId = ((Number) o.get("id")).longValue();
             Integer score = o.get("score") == null ? null : ((Number) o.get("score")).intValue();
@@ -226,8 +228,8 @@ public class LunchPollService {
     /** @return текст для answerCallbackQuery */
     @Transactional
     public String rate(long userId, long chatId, long messageId, long optionId, int score) {
-        if (score < 1 || score > 5) {
-            return "Оценка — от 1 до 5";
+        if (score < 1 || score > MAX_SCORE) {
+            return "Оценка — от 1 до " + MAX_SCORE;
         }
         if (!repository.hasVoteFor(optionId, userId)) {
             return "Оценить можно только блюдо, которое вы брали";
@@ -250,21 +252,27 @@ public class LunchPollService {
         } catch (Exception e) {
             log.debug("опрос не обновился: {}", e.toString());
         }
-        return "Спасибо! Оценка " + score + " ⭐";
+        return "Спасибо! Оценка " + score + "/" + MAX_SCORE;
     }
 
     private String ratingCardText(String dishName, Integer score) {
         return "🍽 " + dishName + "\n"
-                + (score == null ? "Ваша оценка: —" : "Ваша оценка: " + "⭐".repeat(score) + " (" + score + ")");
+                + (score == null ? "Ваша оценка: —" : "Ваша оценка: ⭐ " + score + "/" + MAX_SCORE);
     }
 
+    /** Две строки по 5 кнопок: 1..5 и 6..10 — десять в ряд на телефоне не влезают. */
     private Map<String, Object> ratingCardKeyboard(long optionId, Integer score) {
+        List<List<Map<String, String>>> rows = new ArrayList<>();
         List<Map<String, String>> row = new ArrayList<>();
-        for (int s = 1; s <= 5; s++) {
-            String label = (score != null && score == s) ? "✅ " + s : String.valueOf(s);
+        for (int s = 1; s <= MAX_SCORE; s++) {
+            String label = (score != null && score == s) ? "✅" + s : String.valueOf(s);
             row.add(Map.of("text", label, "callback_data", "rate:" + optionId + ":" + s));
+            if (row.size() == 5) {
+                rows.add(row);
+                row = new ArrayList<>();
+            }
         }
-        return Map.of("inline_keyboard", List.of(row));
+        return Map.of("inline_keyboard", rows);
     }
 
     public void sendSummary(long chatId, long pollId) {
@@ -411,6 +419,7 @@ public class LunchPollService {
             }
             if (rating != null) {
                 sb.append("   ⭐ ").append(String.format(java.util.Locale.ROOT, "%.1f", rating.avg()))
+                        .append("/").append(MAX_SCORE)
                         .append(" · оценок: ").append(rating.count()).append('\n');
             }
             if (optionVotes.isEmpty()) {
