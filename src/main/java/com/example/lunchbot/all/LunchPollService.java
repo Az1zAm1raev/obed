@@ -112,6 +112,12 @@ public class LunchPollService {
         } catch (Exception e) {
             log.warn("Каталог недоступен, опрос работает без фото: {}", e.toString());
         }
+        // после enrich известны dish_id — балл сводится по всем написаниям блюда
+        try {
+            refreshMessage(pollId);
+        } catch (Exception e) {
+            log.debug("опрос не обновился (баллы не изменились): {}", e.toString());
+        }
     }
 
     // ============================================================ голосование
@@ -195,8 +201,70 @@ public class LunchPollService {
         int messageId = ((Number) poll.get("message_id")).intValue();
 
         telegram.editMessageText(chatId, messageId,
-                renderPoll(pollId) + "\n🔒 Голосование закрыто", EMPTY_KEYBOARD);
+                renderPoll(pollId) + "\n🔒 Голосование закрыто", closedKeyboard(pollId));
         telegram.sendMessage(chatId, "✅ Голосование закрыто.");
+    }
+
+    // ============================================================ оценки
+
+    /** Deep link «⭐ Оценить блюда»: в личке по сообщению на каждое взятое блюдо. */
+    public void showRatingForm(long userId, long chatId, long pollId) {
+        List<Map<String, Object>> options = repository.findRateableOptions(pollId, userId);
+        if (options.isEmpty()) {
+            telegram.sendMessage(chatId, "Вы не выбирали блюд в этом опросе — оценивать нечего.");
+            return;
+        }
+        telegram.sendMessage(chatId, "⭐ Оцените блюда от 1 до 5. Оценку можно поменять.");
+        for (Map<String, Object> o : options) {
+            long optionId = ((Number) o.get("id")).longValue();
+            Integer score = o.get("score") == null ? null : ((Number) o.get("score")).intValue();
+            telegram.sendMessage(chatId, ratingCardText((String) o.get("text"), score),
+                    ratingCardKeyboard(optionId, score));
+        }
+    }
+
+    /** @return текст для answerCallbackQuery */
+    @Transactional
+    public String rate(long userId, long chatId, long messageId, long optionId, int score) {
+        if (score < 1 || score > 5) {
+            return "Оценка — от 1 до 5";
+        }
+        if (!repository.hasVoteFor(optionId, userId)) {
+            return "Оценить можно только блюдо, которое вы брали";
+        }
+        repository.upsertRating(optionId, userId, score);
+
+        Long pollId = repository.findPollIdByOption(optionId);
+        String dishName = repository.findOptions(pollId).stream()
+                .filter(o -> ((Number) o.get("id")).longValue() == optionId)
+                .map(o -> (String) o.get("text"))
+                .findFirst().orElse("");
+        try {
+            telegram.editMessageText(chatId, messageId, ratingCardText(dishName, score),
+                    ratingCardKeyboard(optionId, score));
+        } catch (Exception e) {
+            log.debug("карточка оценки не обновилась: {}", e.toString());   // та же оценка повторно
+        }
+        try {
+            refreshMessage(pollId);
+        } catch (Exception e) {
+            log.debug("опрос не обновился: {}", e.toString());
+        }
+        return "Спасибо! Оценка " + score + " ⭐";
+    }
+
+    private String ratingCardText(String dishName, Integer score) {
+        return "🍽 " + dishName + "\n"
+                + (score == null ? "Ваша оценка: —" : "Ваша оценка: " + "⭐".repeat(score) + " (" + score + ")");
+    }
+
+    private Map<String, Object> ratingCardKeyboard(long optionId, Integer score) {
+        List<Map<String, String>> row = new ArrayList<>();
+        for (int s = 1; s <= 5; s++) {
+            String label = (score != null && score == s) ? "✅ " + s : String.valueOf(s);
+            row.add(Map.of("text", label, "callback_data", "rate:" + optionId + ":" + s));
+        }
+        return Map.of("inline_keyboard", List.of(row));
     }
 
     public void sendSummary(long chatId, long pollId) {
@@ -308,13 +376,20 @@ public class LunchPollService {
         Map<String, Object> poll = repository.findPoll(pollId);
         long chatId = ((Number) poll.get("chat_id")).longValue();
         int messageId = ((Number) poll.get("message_id")).intValue();
-        telegram.editMessageText(chatId, messageId, renderPoll(pollId), buildKeyboard(pollId));
+        if (Boolean.TRUE.equals(poll.get("active"))) {
+            telegram.editMessageText(chatId, messageId, renderPoll(pollId), buildKeyboard(pollId));
+        } else {
+            // оценки ставят и после закрытия — балл в сообщении тоже обновляем
+            telegram.editMessageText(chatId, messageId,
+                    renderPoll(pollId) + "\n🔒 Голосование закрыто", closedKeyboard(pollId));
+        }
     }
 
     private String renderPoll(long pollId) {
         Map<String, Object> poll = repository.findPoll(pollId);
         List<Map<String, Object>> options = repository.findOptions(pollId);
         List<Map<String, Object>> votes = repository.findVotes(pollId);
+        Map<Long, LunchPollRepository.Rating> ratings = repository.findRatings(pollId);
 
         Map<Long, List<Map<String, Object>>> grouped = votes.stream().collect(
                 Collectors.groupingBy(v -> ((Number) v.get("option_id")).longValue()));
@@ -323,12 +398,25 @@ public class LunchPollService {
         sb.append(poll.get("title")).append("\n\n");
         sb.append("Всего голосов: ").append(votes.size()).append("\n\n");
 
+        // Все блюда меню: название, под ним общий балл, дальше — кто взял.
         for (Map<String, Object> option : options) {
             long optionId = ((Number) option.get("id")).longValue();
             List<Map<String, Object>> optionVotes = grouped.getOrDefault(optionId, List.of());
-            if (optionVotes.isEmpty()) continue;
+            LunchPollRepository.Rating rating = ratings.get(optionId);
 
-            sb.append("✅ ").append(option.get("text")).append(" (").append(optionVotes.size()).append(")\n");
+            if (optionVotes.isEmpty()) {
+                sb.append("▫️ ").append(option.get("text")).append('\n');
+            } else {
+                sb.append("✅ ").append(option.get("text")).append(" (").append(optionVotes.size()).append(")\n");
+            }
+            if (rating != null) {
+                sb.append("   ⭐ ").append(String.format(java.util.Locale.ROOT, "%.1f", rating.avg()))
+                        .append(" · оценок: ").append(rating.count()).append('\n');
+            }
+            if (optionVotes.isEmpty()) {
+                sb.append('\n');
+                continue;
+            }
 
             // Считаем порции на человека: две одинаковые порции → «Азиз ×2»
             Map<String, Integer> portions = new LinkedHashMap<>();
@@ -375,6 +463,18 @@ public class LunchPollService {
                 Map.of("text", "➕ Добавить ещё блюдо", "callback_data", "lunch_add:" + pollId),
                 Map.of("text", "❌ Отменить мои выборы", "callback_data", "lunch_cancel:" + pollId)));
 
+        rows.add(List.of(rateButton(pollId)));
+
         return Map.of("inline_keyboard", rows);
+    }
+
+    /** После закрытия голосовать нельзя, но оценивать — можно. */
+    private Map<String, Object> closedKeyboard(long pollId) {
+        return Map.of("inline_keyboard", List.of(List.of(rateButton(pollId))));
+    }
+
+    private Map<String, String> rateButton(long pollId) {
+        return Map.of("text", "⭐ Оценить блюда",
+                "url", "https://t.me/" + telegram.username() + "?start=rate_" + pollId);
     }
 }

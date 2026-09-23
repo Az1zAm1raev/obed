@@ -282,6 +282,14 @@ public class TelegramUpdateWorker {
                 // упадём в приветствие
             }
         }
+        if (parts.length == 2 && parts[1].startsWith("rate_")) {
+            try {
+                lunchPollService.showRatingForm(userId, chatId, Long.parseLong(parts[1].substring(5)));
+                return;
+            } catch (NumberFormatException ignored) {
+                // упадём в приветствие
+            }
+        }
         telegram.sendMessage(chatId, "Привет! Я бот для обедов. Нажмите «🧾 Подтвердить оплату» под опросом.");
     }
 
@@ -317,6 +325,16 @@ public class TelegramUpdateWorker {
         if (data.startsWith("lunch_add:")) {
             VoteResult r = lunchPollService.enableAddMode(Long.parseLong(data.split(":")[1]), userId);
             telegram.answerCallback(callbackId, messageFor(r));
+            return;
+        }
+
+        // --- оценка блюда: rate:<optionId>:<score>, приходит из лички ---
+        if (data.startsWith("rate:")) {
+            String[] p = data.split(":");
+            long messageId = callback.get("message").get("message_id").asLong();
+            String answer = lunchPollService.rate(
+                    userId, chatId, messageId, Long.parseLong(p[1]), Integer.parseInt(p[2]));
+            telegram.answerCallback(callbackId, answer);
             return;
         }
 
